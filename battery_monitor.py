@@ -12,7 +12,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 import multiprocessing
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Any, Optional
 
 import psutil
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -49,6 +49,13 @@ class CPULoader:
         self.processes.clear()
 
 class BatteryMonitor(QMainWindow):
+    # Label Prefixes
+    STATUS_PREFIX = "Status: "
+    TEMP_PREFIX = "CPU Temperature: "
+    FAN_PREFIX = "Fan Speed: "
+    BATTERY_PREFIX = "Battery: "
+    TIME_REMAINING_PREFIX = "Time: "
+
     cpu_loader: CPULoader
     times: List[str]
     battery_levels: List[float]
@@ -61,6 +68,7 @@ class BatteryMonitor(QMainWindow):
     battery_label: QLabel
     fan_label: QLabel
     status_label: QLabel
+    time_remaining_label: QLabel
     figure: Figure
     canvas: FigureCanvasQTAgg
     ax: Axes
@@ -120,20 +128,24 @@ class BatteryMonitor(QMainWindow):
         top_layout.addLayout(controls_layout)
 
         # Status display
-        self.status_label = QLabel("Status: Idle")
+        self.status_label = QLabel(self.STATUS_PREFIX + "Idle")
         top_layout.addWidget(self.status_label)
 
         # Temperature display
-        self.temp_label = QLabel("CPU Temperature: N/A")
+        self.temp_label = QLabel(self.TEMP_PREFIX + "N/A")
         top_layout.addWidget(self.temp_label)
 
         # Fan speed display
-        self.fan_label = QLabel("Fan Speed: N/A")
+        self.fan_label = QLabel(self.FAN_PREFIX + "N/A")
         top_layout.addWidget(self.fan_label)
 
         # Battery percentage display
-        self.battery_label = QLabel("Battery: N/A")
+        self.battery_label = QLabel(self.BATTERY_PREFIX + "N/A")
         top_layout.addWidget(self.battery_label)
+
+        # Time remaining display
+        self.time_remaining_label = QLabel(self.TIME_REMAINING_PREFIX + "N/A")
+        top_layout.addWidget(self.time_remaining_label)
 
         top_widget.setMaximumHeight(top_widget.sizeHint().height()) # Fix the height
         main_layout.addWidget(top_widget)
@@ -152,13 +164,13 @@ class BatteryMonitor(QMainWindow):
             self.cpu_loader.start(self.cores_spinbox.value())
             self.start_button.setText("Stop Load")
             self.cores_spinbox.setEnabled(False)
-            self.status_label.setText("Status: Loading CPU...")
+            self.status_label.setText(self.STATUS_PREFIX + "Loading CPU...")
 
         else:
             self.cpu_loader.stop()
             self.start_button.setText("Start Load")
             self.cores_spinbox.setEnabled(True)
-            self.status_label.setText("Status: Idle")
+            self.status_label.setText(self.STATUS_PREFIX + "Idle")
 
     def update_data(self) -> None:
         # Update temperature
@@ -169,7 +181,11 @@ class BatteryMonitor(QMainWindow):
             first_sensor_list: List[Any] = next(iter(temps.values()))
             if first_sensor_list:
                 first_temp: float = first_sensor_list[0].current
-                self.temp_label.setText(f"CPU Temperature: {first_temp:.1f}°C")
+                self.temp_label.setText(f"{self.TEMP_PREFIX}{first_temp:.1f}°C")
+            else:
+                 self.temp_label.setText(self.TEMP_PREFIX + "N/A") # Ensure N/A is set if no data
+        else:
+            self.temp_label.setText(self.TEMP_PREFIX + "N/A") # Ensure N/A is set if psutil fails
 
         # Update fan speed
         fans: Optional[Dict[str, List[Any]]] = psutil.sensors_fans()
@@ -179,19 +195,34 @@ class BatteryMonitor(QMainWindow):
                 first_fan_list: List[Any] = next(iter(fans.values()))
                 if first_fan_list:
                     fan_speed: int = first_fan_list[0].current
-                    self.fan_label.setText(f"Fan Speed: {fan_speed} RPM")
+                    self.fan_label.setText(f"{self.FAN_PREFIX}{fan_speed} RPM")
                 else:
-                    self.fan_label.setText("Fan Speed: N/A")
+                    self.fan_label.setText(self.FAN_PREFIX + "N/A")
             except (StopIteration, IndexError, AttributeError):
-                 self.fan_label.setText("Fan Speed: N/A")
+                 self.fan_label.setText(self.FAN_PREFIX + "N/A")
         else:
-            self.fan_label.setText("Fan Speed: N/A")
+            self.fan_label.setText(self.FAN_PREFIX + "N/A")
 
         # Update battery
         battery: Optional[psutil._common.sbattery] = psutil.sensors_battery()
         if battery:
             percent: float = battery.percent
-            self.battery_label.setText(f"Battery: {percent:.1f}%")
+            self.battery_label.setText(f"{self.BATTERY_PREFIX}{percent:.1f}%")
+
+            # Update time remaining
+            secsleft: int = battery.secsleft
+            if battery.power_plugged:
+                time_remaining_str = "Charging"
+            elif secsleft == psutil.POWER_TIME_UNLIMITED:
+                time_remaining_str = "Unlimited"
+            elif secsleft == psutil.POWER_TIME_UNKNOWN:
+                time_remaining_str = "Calculating..."
+            else:
+                # Format seconds into H:MM
+                mm, ss = divmod(secsleft, 60)
+                hh, mm = divmod(mm, 60)
+                time_remaining_str = f"{hh}:{mm:02d} remaining"
+            self.time_remaining_label.setText(self.TIME_REMAINING_PREFIX + time_remaining_str)
 
             current_time: str = datetime.now().strftime('%H:%M:%S')
             self.times.append(current_time)
@@ -203,10 +234,23 @@ class BatteryMonitor(QMainWindow):
             self.ax.set_title("Battery Level Over Time")
             self.ax.set_xlabel("Time")
             self.ax.set_ylabel("Battery %")
+            self.ax.set_ylim(0, 100)  # Set fixed Y-axis limits
             self.ax.xaxis.set_major_locator(MaxNLocator(nbins=10, prune='both'))
+
+            # Remove top and right spines
+            self.ax.spines['top'].set_visible(False)
+            self.ax.spines['right'].set_visible(False)
+
+            # Add faint horizontal grid lines every 10%
+            self.ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.7)
+
             plt.setp(self.ax.get_xticklabels(), rotation=45, ha="right")
             self.figure.tight_layout()
             self.canvas.draw()
+        else:
+            # If no battery info, set labels to N/A
+            self.battery_label.setText(self.BATTERY_PREFIX + "N/A")
+            self.time_remaining_label.setText(self.TIME_REMAINING_PREFIX + "N/A")
 
     def log_data(self) -> None:
         battery: Optional[psutil._common.sbattery] = psutil.sensors_battery()
